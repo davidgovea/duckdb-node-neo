@@ -2,6 +2,11 @@ import duckdb from '@duckdb/node-bindings';
 import { DuckDBConnection } from './DuckDBConnection';
 import { DuckDBDataChunk } from './DuckDBDataChunk';
 
+/**
+ * Append Arrow C-Data batches to a DuckDB appender.
+ * Releases each batch via `arrow_c_array_release` after it has been appended.
+ * The caller remains responsible for releasing the ArrowSchema.
+ */
 export async function appendArrowCData(
   connection: DuckDBConnection,
   appender: duckdb.Appender,

@@ -501,6 +501,7 @@ struct ArrowSchemaHolder {
 
 struct ArrowArrayHolder {
   ArrowArray array{};
+
   std::unique_ptr<const void*[]> buffer_pointers;
   std::vector<Napi::Reference<Napi::ArrayBuffer>> pinned_buffers;
   std::unique_ptr<ArrowArray*[]> child_pointers;
@@ -527,6 +528,9 @@ struct ArrowArrayHolder {
     child_holders.clear();
     child_pointers.reset();
     buffer_pointers.reset();
+    for (auto &ref : pinned_buffers) {
+      ref.Reset();
+    }
     pinned_buffers.clear();
     array.buffers = nullptr;
     array.children = nullptr;
@@ -551,6 +555,21 @@ struct ArrowArrayHolder {
 
   ~ArrowArrayHolder() {
     ReleaseInternal();
+  }
+};
+
+struct ArrowConvertedSchemaHolder {
+  duckdb_arrow_converted_schema converted_schema = nullptr;
+
+  void Release() {
+    if (converted_schema) {
+      duckdb_destroy_arrow_converted_schema(&converted_schema);
+      converted_schema = nullptr;
+    }
+  }
+
+  ~ArrowConvertedSchemaHolder() {
+    Release();
   }
 };
 
@@ -579,6 +598,9 @@ std::unique_ptr<ArrowSchemaHolder> BuildArrowSchemaHolder(Napi::Env env, Napi::O
   }
   auto children_value = desc.Get("children");
   if (!IsNullish(children_value)) {
+    if (!children_value.IsArray()) {
+      throw Napi::TypeError::New(env, "ArrowSchemaDesc.children must be an array");
+    }
     auto children_array = children_value.As<Napi::Array>();
     auto child_count = static_cast<uint32_t>(children_array.Length());
     if (child_count > 0) {
@@ -642,10 +664,22 @@ std::unique_ptr<ArrowArrayHolder> BuildArrowArrayHolder(Napi::Env env, Napi::Obj
       if (!buffer_entry.IsTypedArray() && !buffer_entry.IsDataView()) {
         throw Napi::TypeError::New(env, "ArrowArrayDesc.buffers entries must be typed arrays or null");
       }
-      auto view = buffer_entry.As<Napi::ArrayBufferView>();
-      auto backing = view.ArrayBuffer();
-      holder->pinned_buffers.emplace_back(Napi::Persistent(backing));
-      holder->buffer_pointers[i] = static_cast<const uint8_t*>(view.Data());
+      Napi::ArrayBuffer backing;
+      const void *data_ptr = nullptr;
+      if (buffer_entry.IsTypedArray()) {
+        auto typed = buffer_entry.As<Napi::TypedArray>();
+        backing = typed.ArrayBuffer();
+        auto base_ptr = static_cast<const uint8_t*>(backing.Data());
+        data_ptr = base_ptr ? base_ptr + typed.ByteOffset() : nullptr;
+      } else {
+        auto view = buffer_entry.As<Napi::DataView>();
+        backing = view.ArrayBuffer();
+        auto base_ptr = static_cast<const uint8_t*>(backing.Data());
+        data_ptr = base_ptr ? base_ptr + view.ByteOffset() : nullptr;
+      }
+      auto ref = Napi::Reference<Napi::ArrayBuffer>::New(backing, 1);
+      holder->pinned_buffers.emplace_back(std::move(ref));
+      holder->buffer_pointers[i] = data_ptr;
     }
     array.buffers = holder->buffer_pointers.get();
   } else {
@@ -655,6 +689,9 @@ std::unique_ptr<ArrowArrayHolder> BuildArrowArrayHolder(Napi::Env env, Napi::Obj
 
   auto children_value = desc.Get("children");
   if (!IsNullish(children_value)) {
+    if (!children_value.IsArray()) {
+      throw Napi::TypeError::New(env, "ArrowArrayDesc.children must be an array");
+    }
     auto children_array = children_value.As<Napi::Array>();
     auto child_count = static_cast<uint32_t>(children_array.Length());
     if (child_count > 0) {
@@ -897,18 +934,19 @@ static const napi_type_tag ArrowConvertedSchemaTypeTag = {
   0x15FFD62A3A9346BF, 0xAA15AD1B56AAA5F0
 };
 
-void FinalizeArrowConvertedSchema(Napi::BasicEnv, duckdb_arrow_converted_schema converted_schema) {
-  if (converted_schema) {
-    duckdb_destroy_arrow_converted_schema(&converted_schema);
+void FinalizeArrowConvertedSchema(Napi::BasicEnv, ArrowConvertedSchemaHolder *holder) {
+  if (holder) {
+    holder->Release();
+    delete holder;
   }
 }
 
-Napi::External<_duckdb_arrow_converted_schema> CreateExternalForArrowConvertedSchema(Napi::Env env, duckdb_arrow_converted_schema converted_schema) {
-  return CreateExternal<_duckdb_arrow_converted_schema>(env, ArrowConvertedSchemaTypeTag, converted_schema, FinalizeArrowConvertedSchema);
+Napi::External<ArrowConvertedSchemaHolder> CreateExternalForArrowConvertedSchema(Napi::Env env, ArrowConvertedSchemaHolder *holder) {
+  return CreateExternal<ArrowConvertedSchemaHolder>(env, ArrowConvertedSchemaTypeTag, holder, FinalizeArrowConvertedSchema);
 }
 
-duckdb_arrow_converted_schema GetArrowConvertedSchemaFromExternal(Napi::Env env, Napi::Value value) {
-  return GetDataFromExternal<_duckdb_arrow_converted_schema>(env, ArrowConvertedSchemaTypeTag, value, "Invalid ArrowConvertedSchema argument");
+ArrowConvertedSchemaHolder *GetArrowConvertedSchemaHolderFromExternal(Napi::Env env, Napi::Value value) {
+  return GetDataFromExternal<ArrowConvertedSchemaHolder>(env, ArrowConvertedSchemaTypeTag, value, "Invalid ArrowConvertedSchema argument");
 }
 
 static const napi_type_tag ExtractedStatementsTypeTag = {
@@ -5458,7 +5496,9 @@ private:
     duckdb_arrow_converted_schema converted_schema = nullptr;
     auto error_data = duckdb_schema_from_arrow(connection, schema, &converted_schema);
     HandleDuckDBErrorData(env, error_data, "schema_from_arrow");
-    return CreateExternalForArrowConvertedSchema(env, converted_schema);
+    auto holder = std::make_unique<ArrowConvertedSchemaHolder>();
+    holder->converted_schema = converted_schema;
+    return CreateExternalForArrowConvertedSchema(env, holder.release());
   }
 
   // DUCKDB_C_API duckdb_error_data duckdb_data_chunk_from_arrow(duckdb_connection connection, struct ArrowArray *arrow_array, duckdb_arrow_converted_schema converted_schema, duckdb_data_chunk *out_chunk);
@@ -5470,9 +5510,12 @@ private:
       throw Napi::Error::New(env, "Failed to convert data chunk: connection disconnected");
     }
     auto arrow_array = GetArrowArrayFromExternal(env, info[1]);
-    auto converted_schema = GetArrowConvertedSchemaFromExternal(env, info[2]);
+    auto converted_holder = GetArrowConvertedSchemaHolderFromExternal(env, info[2]);
+    if (!converted_holder->converted_schema) {
+      throw Napi::Error::New(env, "ArrowConvertedSchema has already been destroyed");
+    }
     duckdb_data_chunk data_chunk;
-    auto error_data = duckdb_data_chunk_from_arrow(connection, arrow_array, converted_schema, &data_chunk);
+    auto error_data = duckdb_data_chunk_from_arrow(connection, arrow_array, converted_holder->converted_schema, &data_chunk);
     HandleDuckDBErrorData(env, error_data, "data_chunk_from_arrow");
     return CreateExternalForDataChunk(env, data_chunk);
   }
@@ -5481,8 +5524,8 @@ private:
   // function destroy_arrow_converted_schema(converted_schema: ArrowConvertedSchema): void
   Napi::Value destroy_arrow_converted_schema(const Napi::CallbackInfo& info) {
     auto env = info.Env();
-    auto converted_schema = GetArrowConvertedSchemaFromExternal(env, info[0]);
-    duckdb_destroy_arrow_converted_schema(&converted_schema);
+    auto converted_holder = GetArrowConvertedSchemaHolderFromExternal(env, info[0]);
+    converted_holder->Release();
     return env.Undefined();
   }
 
