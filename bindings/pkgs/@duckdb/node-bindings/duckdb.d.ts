@@ -208,6 +208,19 @@ export interface DataChunk {
   __duckdb_type: 'duckdb_data_chunk';
 }
 
+export interface ArrowSchema {
+  __arrow_c_data: 'ArrowSchema';
+}
+export interface ArrowArray {
+  __arrow_c_data: 'ArrowArray';
+}
+export interface ArrowArrayStream {
+  __arrow_c_stream: 'ArrowArrayStream';
+}
+export interface ArrowConvertedSchema {
+  __duckdb_type: 'duckdb_arrow_converted_schema';
+}
+
 export interface ExtractedStatements {
   __duckdb_type: 'duckdb_extracted_statements';
 }
@@ -257,6 +270,26 @@ export interface ExtractedStatementsAndCount {
 }
 
 export type ScalarFunctionMainFunction = (info: FunctionInfo, input: DataChunk, output: Vector) => void;
+
+export type ArrowSchemaDesc = {
+  format: string;
+  name?: string | null;
+  flags?: number;
+  metadata?: Record<string, string>;
+  children?: ArrowSchemaDesc[];
+  dictionary?: ArrowSchemaDesc | null;
+};
+
+export type ArrowBufferRef = ArrayBufferView | null;
+
+export type ArrowArrayDesc = {
+  length: number;
+  null_count: number;
+  offset?: number;
+  buffers: ArrowBufferRef[];
+  children?: ArrowArrayDesc[];
+  dictionary?: ArrowArrayDesc | null;
+};
 
 // Functions
 
@@ -421,6 +454,19 @@ export function result_return_type(result: Result): ResultType;
 
 // DUCKDB_C_API idx_t duckdb_vector_size();
 export function vector_size(): number;
+
+export function arrow_c_schema_create(desc: ArrowSchemaDesc): ArrowSchema;
+export function arrow_c_schema_release(schema: ArrowSchema): void;
+export function arrow_c_array_create(desc: ArrowArrayDesc): ArrowArray;
+export function arrow_c_array_release(array: ArrowArray): void;
+
+export function schema_from_arrow(connection: Connection, schema: ArrowSchema): ArrowConvertedSchema;
+export function data_chunk_from_arrow(
+  connection: Connection,
+  array: ArrowArray,
+  converted_schema: ArrowConvertedSchema
+): DataChunk;
+export function destroy_arrow_converted_schema(converted_schema: ArrowConvertedSchema): void;
 
 // DUCKDB_C_API bool duckdb_string_is_inlined(duckdb_string_t string);
 // not exposed: handled internally

@@ -227,4 +227,7 @@ export class DuckDBConnection {
       scalarFunction.scalar_function
     );
   }
+  public get nativeConnection(): duckdb.Connection {
+    return this.connection;
+  }
 }

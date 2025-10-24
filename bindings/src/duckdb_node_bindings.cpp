@@ -347,6 +347,371 @@ T* GetDataFromExternal(Napi::Env env, const napi_type_tag &type_tag, Napi::Value
   return external.Data();
 }
 
+#if !defined(ARROW_C_ABI_H) && !defined(DUCKDB_NODE_ARROW_C_DATA_DEFINED)
+#define DUCKDB_NODE_ARROW_C_DATA_DEFINED
+struct ArrowSchema {
+  const char *format;
+  const char *name;
+  const char *metadata;
+  int64_t flags;
+  int64_t n_children;
+  ArrowSchema **children;
+  ArrowSchema *dictionary;
+  void (*release)(ArrowSchema *);
+  void *private_data;
+};
+
+struct ArrowArray {
+  int64_t length;
+  int64_t null_count;
+  int64_t offset;
+  int64_t n_buffers;
+  int64_t n_children;
+  const void **buffers;
+  ArrowArray **children;
+  ArrowArray *dictionary;
+  void (*release)(ArrowArray *);
+  void *private_data;
+};
+#endif
+
+namespace {
+
+bool IsNullish(const Napi::Value &value) {
+  return value.IsNull() || value.IsUndefined();
+}
+
+std::string RequireString(Napi::Env env, const Napi::Value &value, const char *field_name) {
+  if (!value.IsString()) {
+    throw Napi::TypeError::New(env, std::string("Expected string for field '") + field_name + "'");
+  }
+  return value.As<Napi::String>().Utf8Value();
+}
+
+std::unique_ptr<char[]> EncodeMetadataBuffer(Napi::Env env, Napi::Object metadata_obj) {
+  auto property_names = metadata_obj.GetPropertyNames();
+  auto pair_count = static_cast<int64_t>(property_names.Length());
+  size_t total_size = sizeof(int64_t);
+  std::vector<std::string> keys;
+  std::vector<std::string> values;
+  keys.reserve(pair_count);
+  values.reserve(pair_count);
+  for (uint32_t i = 0; i < property_names.Length(); i++) {
+    auto key_value = property_names.Get(i);
+    auto key = key_value.As<Napi::String>().Utf8Value();
+    auto value = metadata_obj.Get(key_value).ToString().Utf8Value();
+    keys.push_back(key);
+    values.push_back(value);
+    total_size += sizeof(int32_t) + key.size();
+    total_size += sizeof(int32_t) + value.size();
+  }
+  auto buffer = std::make_unique<char[]>(total_size);
+  char *cursor = buffer.get();
+  memcpy(cursor, &pair_count, sizeof(int64_t));
+  cursor += sizeof(int64_t);
+  for (int64_t i = 0; i < pair_count; i++) {
+    const auto &key = keys[i];
+    const auto &value = values[i];
+    int32_t key_length = static_cast<int32_t>(key.size());
+    memcpy(cursor, &key_length, sizeof(int32_t));
+    cursor += sizeof(int32_t);
+    if (key_length > 0) {
+      memcpy(cursor, key.data(), key.size());
+      cursor += key.size();
+    }
+    int32_t value_length = static_cast<int32_t>(value.size());
+    memcpy(cursor, &value_length, sizeof(int32_t));
+    cursor += sizeof(int32_t);
+    if (value_length > 0) {
+      memcpy(cursor, value.data(), value.size());
+      cursor += value.size();
+    }
+  }
+  return buffer;
+}
+
+struct ArrowSchemaHolder {
+  ArrowSchema schema{};
+  std::vector<std::unique_ptr<char[]>> string_storage;
+  std::unique_ptr<char[]> metadata_storage;
+  std::unique_ptr<ArrowSchema*[]> child_pointers;
+  std::vector<std::unique_ptr<ArrowSchemaHolder>> child_holders;
+  std::unique_ptr<ArrowSchemaHolder> dictionary_holder;
+  bool released = false;
+
+  const char *StoreString(const std::string &value) {
+    auto data = std::make_unique<char[]>(value.size() + 1);
+    memcpy(data.get(), value.c_str(), value.size() + 1);
+    const char *result = data.get();
+    string_storage.push_back(std::move(data));
+    return result;
+  }
+
+  void SetMetadata(std::unique_ptr<char[]> metadata) {
+    schema.metadata = metadata ? metadata.get() : nullptr;
+    metadata_storage = std::move(metadata);
+  }
+
+  void ReleaseInternal() {
+    if (released) {
+      return;
+    }
+    released = true;
+    if (schema.dictionary && schema.dictionary->release) {
+      schema.dictionary->release(schema.dictionary);
+    }
+    dictionary_holder.reset();
+    if (schema.children) {
+      for (int64_t i = 0; i < schema.n_children; i++) {
+        if (schema.children[i] && schema.children[i]->release) {
+          schema.children[i]->release(schema.children[i]);
+        }
+      }
+    }
+    child_holders.clear();
+    child_pointers.reset();
+    string_storage.clear();
+    metadata_storage.reset();
+    schema.dictionary = nullptr;
+    schema.children = nullptr;
+    schema.n_children = 0;
+    schema.format = nullptr;
+    schema.name = nullptr;
+    schema.metadata = nullptr;
+    schema.release = nullptr;
+    schema.private_data = nullptr;
+  }
+
+  static void Release(ArrowSchema *schema) {
+    if (!schema) {
+      return;
+    }
+    auto holder = static_cast<ArrowSchemaHolder*>(schema->private_data);
+    if (!holder) {
+      schema->release = nullptr;
+      return;
+    }
+    holder->ReleaseInternal();
+  }
+
+  ~ArrowSchemaHolder() {
+    ReleaseInternal();
+  }
+};
+
+struct ArrowArrayHolder {
+  ArrowArray array{};
+  std::unique_ptr<const void*[]> buffer_pointers;
+  std::vector<Napi::Reference<Napi::ArrayBuffer>> pinned_buffers;
+  std::unique_ptr<ArrowArray*[]> child_pointers;
+  std::vector<std::unique_ptr<ArrowArrayHolder>> child_holders;
+  std::unique_ptr<ArrowArrayHolder> dictionary_holder;
+  bool released = false;
+
+  void ReleaseInternal() {
+    if (released) {
+      return;
+    }
+    released = true;
+    if (array.dictionary && array.dictionary->release) {
+      array.dictionary->release(array.dictionary);
+    }
+    dictionary_holder.reset();
+    if (array.children) {
+      for (int64_t i = 0; i < array.n_children; i++) {
+        if (array.children[i] && array.children[i]->release) {
+          array.children[i]->release(array.children[i]);
+        }
+      }
+    }
+    child_holders.clear();
+    child_pointers.reset();
+    buffer_pointers.reset();
+    pinned_buffers.clear();
+    array.buffers = nullptr;
+    array.children = nullptr;
+    array.dictionary = nullptr;
+    array.n_buffers = 0;
+    array.n_children = 0;
+    array.release = nullptr;
+    array.private_data = nullptr;
+  }
+
+  static void Release(ArrowArray *array) {
+    if (!array) {
+      return;
+    }
+    auto holder = static_cast<ArrowArrayHolder*>(array->private_data);
+    if (!holder) {
+      array->release = nullptr;
+      return;
+    }
+    holder->ReleaseInternal();
+  }
+
+  ~ArrowArrayHolder() {
+    ReleaseInternal();
+  }
+};
+
+std::unique_ptr<ArrowSchemaHolder> BuildArrowSchemaHolder(Napi::Env env, Napi::Object desc);
+std::unique_ptr<ArrowArrayHolder> BuildArrowArrayHolder(Napi::Env env, Napi::Object desc);
+
+std::unique_ptr<ArrowSchemaHolder> BuildArrowSchemaHolder(Napi::Env env, Napi::Object desc) {
+  auto holder = std::make_unique<ArrowSchemaHolder>();
+  auto &schema = holder->schema;
+  auto format = RequireString(env, desc.Get("format"), "format");
+  schema.format = holder->StoreString(format);
+  auto name_value = desc.Get("name");
+  if (!IsNullish(name_value)) {
+    schema.name = holder->StoreString(name_value.ToString().Utf8Value());
+  } else {
+    schema.name = nullptr;
+  }
+  auto flags_value = desc.Get("flags");
+  schema.flags = flags_value.IsUndefined() ? 0 : flags_value.As<Napi::Number>().Int64Value();
+  auto metadata_value = desc.Get("metadata");
+  if (!IsNullish(metadata_value)) {
+    auto metadata_obj = metadata_value.As<Napi::Object>();
+    holder->SetMetadata(EncodeMetadataBuffer(env, metadata_obj));
+  } else {
+    holder->SetMetadata(nullptr);
+  }
+  auto children_value = desc.Get("children");
+  if (!IsNullish(children_value)) {
+    auto children_array = children_value.As<Napi::Array>();
+    auto child_count = static_cast<uint32_t>(children_array.Length());
+    if (child_count > 0) {
+      holder->child_pointers = std::make_unique<ArrowSchema*[]>(child_count);
+      holder->child_holders.reserve(child_count);
+      for (uint32_t i = 0; i < child_count; i++) {
+        auto child_desc_value = children_array.Get(i);
+        if (!child_desc_value.IsObject()) {
+          throw Napi::TypeError::New(env, "ArrowSchemaDesc.children must contain objects");
+        }
+        auto child_holder = BuildArrowSchemaHolder(env, child_desc_value.As<Napi::Object>());
+        holder->child_pointers[i] = &child_holder->schema;
+        holder->child_holders.emplace_back(std::move(child_holder));
+      }
+      schema.children = holder->child_pointers.get();
+    } else {
+      schema.children = nullptr;
+    }
+    schema.n_children = child_count;
+  } else {
+    schema.children = nullptr;
+    schema.n_children = 0;
+  }
+  auto dictionary_value = desc.Get("dictionary");
+  if (!IsNullish(dictionary_value)) {
+    if (!dictionary_value.IsObject()) {
+      throw Napi::TypeError::New(env, "ArrowSchemaDesc.dictionary must be an object");
+    }
+    holder->dictionary_holder = BuildArrowSchemaHolder(env, dictionary_value.As<Napi::Object>());
+    schema.dictionary = &holder->dictionary_holder->schema;
+  } else {
+    schema.dictionary = nullptr;
+  }
+  schema.release = ArrowSchemaHolder::Release;
+  schema.private_data = holder.get();
+  return holder;
+}
+
+std::unique_ptr<ArrowArrayHolder> BuildArrowArrayHolder(Napi::Env env, Napi::Object desc) {
+  auto holder = std::make_unique<ArrowArrayHolder>();
+  auto &array = holder->array;
+  array.length = desc.Get("length").As<Napi::Number>().Int64Value();
+  array.null_count = desc.Get("null_count").As<Napi::Number>().Int64Value();
+  auto offset_value = desc.Get("offset");
+  array.offset = offset_value.IsUndefined() ? 0 : offset_value.As<Napi::Number>().Int64Value();
+
+  auto buffers_value = desc.Get("buffers");
+  if (!buffers_value.IsArray()) {
+    throw Napi::TypeError::New(env, "ArrowArrayDesc.buffers must be an array");
+  }
+  auto buffers_array = buffers_value.As<Napi::Array>();
+  auto buffer_count = static_cast<uint32_t>(buffers_array.Length());
+  if (buffer_count > 0) {
+    holder->buffer_pointers = std::make_unique<const void*[]>(buffer_count);
+    for (uint32_t i = 0; i < buffer_count; i++) {
+      auto buffer_entry = buffers_array.Get(i);
+      if (IsNullish(buffer_entry)) {
+        holder->buffer_pointers[i] = nullptr;
+        continue;
+      }
+      if (!buffer_entry.IsTypedArray() && !buffer_entry.IsDataView()) {
+        throw Napi::TypeError::New(env, "ArrowArrayDesc.buffers entries must be typed arrays or null");
+      }
+      auto view = buffer_entry.As<Napi::ArrayBufferView>();
+      auto backing = view.ArrayBuffer();
+      holder->pinned_buffers.emplace_back(Napi::Persistent(backing));
+      holder->buffer_pointers[i] = static_cast<const uint8_t*>(view.Data());
+    }
+    array.buffers = holder->buffer_pointers.get();
+  } else {
+    array.buffers = nullptr;
+  }
+  array.n_buffers = buffer_count;
+
+  auto children_value = desc.Get("children");
+  if (!IsNullish(children_value)) {
+    auto children_array = children_value.As<Napi::Array>();
+    auto child_count = static_cast<uint32_t>(children_array.Length());
+    if (child_count > 0) {
+      holder->child_pointers = std::make_unique<ArrowArray*[]>(child_count);
+      holder->child_holders.reserve(child_count);
+      for (uint32_t i = 0; i < child_count; i++) {
+        auto child_desc_value = children_array.Get(i);
+        if (!child_desc_value.IsObject()) {
+          throw Napi::TypeError::New(env, "ArrowArrayDesc.children must contain objects");
+        }
+        auto child_holder = BuildArrowArrayHolder(env, child_desc_value.As<Napi::Object>());
+        holder->child_pointers[i] = &child_holder->array;
+        holder->child_holders.emplace_back(std::move(child_holder));
+      }
+      array.children = holder->child_pointers.get();
+    } else {
+      array.children = nullptr;
+    }
+    array.n_children = child_count;
+  } else {
+    array.children = nullptr;
+    array.n_children = 0;
+  }
+
+  auto dictionary_value = desc.Get("dictionary");
+  if (!IsNullish(dictionary_value)) {
+    if (!dictionary_value.IsObject()) {
+      throw Napi::TypeError::New(env, "ArrowArrayDesc.dictionary must be an object");
+    }
+    holder->dictionary_holder = BuildArrowArrayHolder(env, dictionary_value.As<Napi::Object>());
+    array.dictionary = &holder->dictionary_holder->array;
+  } else {
+    array.dictionary = nullptr;
+  }
+
+  array.release = ArrowArrayHolder::Release;
+  array.private_data = holder.get();
+  return holder;
+}
+
+} // namespace
+
+void HandleDuckDBErrorData(Napi::Env env, duckdb_error_data error_data, const char *context) {
+  if (!error_data) {
+    return;
+  }
+  bool has_error = duckdb_error_data_has_error(error_data);
+  if (has_error) {
+    const char *message = duckdb_error_data_message(error_data);
+    std::string prefix = context ? std::string(context) + ": " : std::string();
+    std::string msg = prefix + (message ? std::string(message) : std::string("Unknown DuckDB error"));
+    duckdb_destroy_error_data(&error_data);
+    throw Napi::Error::New(env, msg);
+  }
+  duckdb_destroy_error_data(&error_data);
+}
+
 // The following type tags are generated using: uuidgen | sed -r -e 's/-//g' -e 's/(.{16})(.*)/0x\1, 0x\2/'
 
 static const napi_type_tag AppenderTypeTag = {
@@ -472,6 +837,78 @@ Napi::External<_duckdb_data_chunk> CreateExternalForDataChunkWithoutFinalizer(Na
 
 duckdb_data_chunk GetDataChunkFromExternal(Napi::Env env, Napi::Value value) {
   return GetDataFromExternal<_duckdb_data_chunk>(env, DataChunkTypeTag, value, "Invalid data chunk argument");
+}
+
+static const napi_type_tag ArrowSchemaTypeTag = {
+  0x1FAC17EB6C784276, 0x91731D931628E0FB
+};
+
+void FinalizeArrowSchema(Napi::BasicEnv, ArrowSchemaHolder *holder) {
+  if (holder) {
+    holder->ReleaseInternal();
+    delete holder;
+  }
+}
+
+Napi::External<ArrowSchemaHolder> CreateExternalForArrowSchema(Napi::Env env, ArrowSchemaHolder *holder) {
+  return CreateExternal<ArrowSchemaHolder>(env, ArrowSchemaTypeTag, holder, FinalizeArrowSchema);
+}
+
+ArrowSchemaHolder *GetArrowSchemaHolderFromExternal(Napi::Env env, Napi::Value value) {
+  return GetDataFromExternal<ArrowSchemaHolder>(env, ArrowSchemaTypeTag, value, "Invalid ArrowSchema argument");
+}
+
+ArrowSchema *GetArrowSchemaFromExternal(Napi::Env env, Napi::Value value) {
+  auto holder = GetArrowSchemaHolderFromExternal(env, value);
+  if (!holder->schema.release) {
+    throw Napi::Error::New(env, "ArrowSchema has already been released");
+  }
+  return &holder->schema;
+}
+
+static const napi_type_tag ArrowArrayTypeTag = {
+  0xB0B296345DA44316, 0xABCCE33FF277F5E2
+};
+
+void FinalizeArrowArray(Napi::BasicEnv, ArrowArrayHolder *holder) {
+  if (holder) {
+    holder->ReleaseInternal();
+    delete holder;
+  }
+}
+
+Napi::External<ArrowArrayHolder> CreateExternalForArrowArray(Napi::Env env, ArrowArrayHolder *holder) {
+  return CreateExternal<ArrowArrayHolder>(env, ArrowArrayTypeTag, holder, FinalizeArrowArray);
+}
+
+ArrowArrayHolder *GetArrowArrayHolderFromExternal(Napi::Env env, Napi::Value value) {
+  return GetDataFromExternal<ArrowArrayHolder>(env, ArrowArrayTypeTag, value, "Invalid ArrowArray argument");
+}
+
+ArrowArray *GetArrowArrayFromExternal(Napi::Env env, Napi::Value value) {
+  auto holder = GetArrowArrayHolderFromExternal(env, value);
+  if (!holder->array.release) {
+    throw Napi::Error::New(env, "ArrowArray has already been released");
+  }
+  return &holder->array;
+}
+
+static const napi_type_tag ArrowConvertedSchemaTypeTag = {
+  0x15FFD62A3A9346BF, 0xAA15AD1B56AAA5F0
+};
+
+void FinalizeArrowConvertedSchema(Napi::BasicEnv, duckdb_arrow_converted_schema converted_schema) {
+  if (converted_schema) {
+    duckdb_destroy_arrow_converted_schema(&converted_schema);
+  }
+}
+
+Napi::External<_duckdb_arrow_converted_schema> CreateExternalForArrowConvertedSchema(Napi::Env env, duckdb_arrow_converted_schema converted_schema) {
+  return CreateExternal<_duckdb_arrow_converted_schema>(env, ArrowConvertedSchemaTypeTag, converted_schema, FinalizeArrowConvertedSchema);
+}
+
+duckdb_arrow_converted_schema GetArrowConvertedSchemaFromExternal(Napi::Env env, Napi::Value value) {
+  return GetDataFromExternal<_duckdb_arrow_converted_schema>(env, ArrowConvertedSchemaTypeTag, value, "Invalid ArrowConvertedSchema argument");
 }
 
 static const napi_type_tag ExtractedStatementsTypeTag = {
@@ -1389,6 +1826,13 @@ public:
       InstanceMethod("result_return_type", &DuckDBNodeAddon::result_return_type),
 
       InstanceMethod("vector_size", &DuckDBNodeAddon::vector_size),
+      InstanceMethod("arrow_c_schema_create", &DuckDBNodeAddon::arrow_c_schema_create),
+      InstanceMethod("arrow_c_schema_release", &DuckDBNodeAddon::arrow_c_schema_release),
+      InstanceMethod("arrow_c_array_create", &DuckDBNodeAddon::arrow_c_array_create),
+      InstanceMethod("arrow_c_array_release", &DuckDBNodeAddon::arrow_c_array_release),
+      InstanceMethod("schema_from_arrow", &DuckDBNodeAddon::schema_from_arrow),
+      InstanceMethod("data_chunk_from_arrow", &DuckDBNodeAddon::data_chunk_from_arrow),
+      InstanceMethod("destroy_arrow_converted_schema", &DuckDBNodeAddon::destroy_arrow_converted_schema),
 
       InstanceMethod("from_date", &DuckDBNodeAddon::from_date),
       InstanceMethod("to_date", &DuckDBNodeAddon::to_date),
@@ -4960,6 +5404,42 @@ private:
   // DUCKDB_C_API char *duckdb_table_description_get_column_name(duckdb_table_description table_description, idx_t index);
   // TODO table description
 
+  // function arrow_c_schema_create(desc: object): ArrowSchema
+  Napi::Value arrow_c_schema_create(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    if (info.Length() < 1 || !info[0].IsObject()) {
+      throw Napi::TypeError::New(env, "Expected ArrowSchemaDesc object");
+    }
+    auto holder = BuildArrowSchemaHolder(env, info[0].As<Napi::Object>());
+    return CreateExternalForArrowSchema(env, holder.release());
+  }
+
+  // function arrow_c_schema_release(schema: ArrowSchema): void
+  Napi::Value arrow_c_schema_release(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    auto holder = GetArrowSchemaHolderFromExternal(env, info[0]);
+    holder->ReleaseInternal();
+    return env.Undefined();
+  }
+
+  // function arrow_c_array_create(desc: object): ArrowArray
+  Napi::Value arrow_c_array_create(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    if (info.Length() < 1 || !info[0].IsObject()) {
+      throw Napi::TypeError::New(env, "Expected ArrowArrayDesc object");
+    }
+    auto holder = BuildArrowArrayHolder(env, info[0].As<Napi::Object>());
+    return CreateExternalForArrowArray(env, holder.release());
+  }
+
+  // function arrow_c_array_release(array: ArrowArray): void
+  Napi::Value arrow_c_array_release(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    auto holder = GetArrowArrayHolderFromExternal(env, info[0]);
+    holder->ReleaseInternal();
+    return env.Undefined();
+  }
+
   // DUCKDB_C_API duckdb_error_data duckdb_to_arrow_schema(duckdb_arrow_options arrow_options, duckdb_logical_type *types, const char **names, idx_t column_count, struct ArrowSchema *out_schema);
   // TODO arrow
 
@@ -4967,13 +5447,44 @@ private:
   // TODO arrow
 
   // DUCKDB_C_API duckdb_error_data duckdb_schema_from_arrow(duckdb_connection connection, struct ArrowSchema *schema, duckdb_arrow_converted_schema *out_types);
-  // TODO arrow
+  // function schema_from_arrow(connection: Connection, schema: ArrowSchema): ArrowConvertedSchema
+  Napi::Value schema_from_arrow(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    auto connection = GetConnectionFromExternal(env, info[0]);
+    if (!connection) {
+      throw Napi::Error::New(env, "Failed to convert schema: connection disconnected");
+    }
+    auto schema = GetArrowSchemaFromExternal(env, info[1]);
+    duckdb_arrow_converted_schema converted_schema = nullptr;
+    auto error_data = duckdb_schema_from_arrow(connection, schema, &converted_schema);
+    HandleDuckDBErrorData(env, error_data, "schema_from_arrow");
+    return CreateExternalForArrowConvertedSchema(env, converted_schema);
+  }
 
   // DUCKDB_C_API duckdb_error_data duckdb_data_chunk_from_arrow(duckdb_connection connection, struct ArrowArray *arrow_array, duckdb_arrow_converted_schema converted_schema, duckdb_data_chunk *out_chunk);
-  // TODO arrow
+  // function data_chunk_from_arrow(connection: Connection, array: ArrowArray, converted_schema: ArrowConvertedSchema): DataChunk
+  Napi::Value data_chunk_from_arrow(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    auto connection = GetConnectionFromExternal(env, info[0]);
+    if (!connection) {
+      throw Napi::Error::New(env, "Failed to convert data chunk: connection disconnected");
+    }
+    auto arrow_array = GetArrowArrayFromExternal(env, info[1]);
+    auto converted_schema = GetArrowConvertedSchemaFromExternal(env, info[2]);
+    duckdb_data_chunk data_chunk;
+    auto error_data = duckdb_data_chunk_from_arrow(connection, arrow_array, converted_schema, &data_chunk);
+    HandleDuckDBErrorData(env, error_data, "data_chunk_from_arrow");
+    return CreateExternalForDataChunk(env, data_chunk);
+  }
 
   // DUCKDB_C_API void duckdb_destroy_arrow_converted_schema(duckdb_arrow_converted_schema *arrow_converted_schema);
-  // TODO arrow
+  // function destroy_arrow_converted_schema(converted_schema: ArrowConvertedSchema): void
+  Napi::Value destroy_arrow_converted_schema(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    auto converted_schema = GetArrowConvertedSchemaFromExternal(env, info[0]);
+    duckdb_destroy_arrow_converted_schema(&converted_schema);
+    return env.Undefined();
+  }
 
   // #ifndef DUCKDB_API_NO_DEPRECATED
 

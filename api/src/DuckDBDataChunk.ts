@@ -1,4 +1,5 @@
 import duckdb from '@duckdb/node-bindings';
+import { DuckDBConnection } from './DuckDBConnection';
 import { DuckDBType } from './DuckDBType';
 import { DuckDBValueConverter } from './DuckDBValueConverter';
 import { DuckDBVector } from './DuckDBVector';
@@ -21,6 +22,18 @@ export class DuckDBDataChunk {
       chunk.rowCount = rowCount;
     }
     return chunk;
+  }
+  public static fromArrow(
+    connection: DuckDBConnection,
+    array: duckdb.ArrowArray,
+    converted: duckdb.ArrowConvertedSchema
+  ): DuckDBDataChunk {
+    const chunk = duckdb.data_chunk_from_arrow(
+      connection.nativeConnection,
+      array,
+      converted
+    );
+    return new DuckDBDataChunk(chunk);
   }
   public reset() {
     duckdb.data_chunk_reset(this.chunk);
