@@ -711,6 +711,51 @@ duckdb_value GetValueFromExternal(Napi::Env env, Napi::Value value) {
   return GetDataFromExternal<_duckdb_value>(env, ValueTypeTag, value, "Invalid value argument");
 }
 
+static const napi_type_tag ExpressionTypeTag = {
+  0x7C2E9F5A1B3D4E6F, 0x8A9C5B2D6E1F4A7B
+};
+
+void FinalizeExpression(Napi::BasicEnv, duckdb_expression expression) {
+  if (expression) {
+    duckdb_destroy_expression(&expression);
+    expression = nullptr;
+  }
+}
+
+Napi::External<_duckdb_expression> CreateExternalForExpression(Napi::Env env, duckdb_expression expression) {
+  return CreateExternal<_duckdb_expression>(env, ExpressionTypeTag, expression, FinalizeExpression);
+}
+
+duckdb_expression GetExpressionFromExternal(Napi::Env env, Napi::Value value) {
+  return GetDataFromExternal<_duckdb_expression>(env, ExpressionTypeTag, value, "Invalid expression argument");
+}
+
+static const napi_type_tag BindInfoTypeTag = {
+  0x3F5A6B7C8D9E0F1A, 0x2B3C4D5E6F7A8B9C
+};
+
+Napi::External<_duckdb_bind_info> CreateExternalForBindInfoWithoutFinalizer(Napi::Env env, duckdb_bind_info bind_info) {
+  // BindInfo objects are never explicitly created; they are passed in to function callbacks.
+  return CreateExternalWithoutFinalizer<_duckdb_bind_info>(env, BindInfoTypeTag, bind_info);
+}
+
+duckdb_bind_info GetBindInfoFromExternal(Napi::Env env, Napi::Value value) {
+  return GetDataFromExternal<_duckdb_bind_info>(env, BindInfoTypeTag, value, "Invalid bind info argument");
+}
+
+static const napi_type_tag ClientContextTypeTag = {
+  0x1A2B3C4D5E6F7A8B, 0x9C0D1E2F3A4B5C6D
+};
+
+Napi::External<_duckdb_client_context> CreateExternalForClientContextWithoutFinalizer(Napi::Env env, duckdb_client_context context) {
+  // ClientContext objects are never explicitly created; they are obtained from bind_info or connections.
+  return CreateExternalWithoutFinalizer<_duckdb_client_context>(env, ClientContextTypeTag, context);
+}
+
+duckdb_client_context GetClientContextFromExternal(Napi::Env env, Napi::Value value) {
+  return GetDataFromExternal<_duckdb_client_context>(env, ClientContextTypeTag, value, "Invalid client context argument");
+}
+
 static const napi_type_tag VectorTypeTag = {
   0x9FE56DE8E3124D07, 0x9ABF31145EDE1C9E
 };
@@ -4331,10 +4376,23 @@ private:
   // TODO scalar function set
 
   // DUCKDB_C_API idx_t duckdb_scalar_function_bind_get_argument_count(duckdb_bind_info info);
-  // TODO scalar function expression
+  // function scalar_function_bind_get_argument_count(bind_info: BindInfo): number
+  Napi::Value scalar_function_bind_get_argument_count(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    auto bind_info = GetBindInfoFromExternal(env, info[0]);
+    auto count = duckdb_scalar_function_bind_get_argument_count(bind_info);
+    return Napi::Number::New(env, count);
+  }
 
   // DUCKDB_C_API duckdb_expression duckdb_scalar_function_bind_get_argument(duckdb_bind_info info, idx_t index);
-  // TODO scalar function expression
+  // function scalar_function_bind_get_argument(bind_info: BindInfo, index: number): Expression
+  Napi::Value scalar_function_bind_get_argument(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    auto bind_info = GetBindInfoFromExternal(env, info[0]);
+    auto index = info[1].As<Napi::Number>().Uint32Value();
+    auto expr = duckdb_scalar_function_bind_get_argument(bind_info, index);
+    return CreateExternalForExpression(env, expr);
+  }
 
   // DUCKDB_C_API duckdb_selection_vector duckdb_create_selection_vector(idx_t size);
   // TODO selection vector
@@ -5099,16 +5157,46 @@ private:
   // TODO cast function
 
   // DUCKDB_C_API void duckdb_destroy_expression(duckdb_expression *expr);
-  // TODO expression
+  // not exposed: destroyed in finalizer
 
   // DUCKDB_C_API duckdb_logical_type duckdb_expression_return_type(duckdb_expression expr);
-  // TODO expression
+  // function expression_return_type(expression: Expression): LogicalType
+  Napi::Value expression_return_type(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    auto expr = GetExpressionFromExternal(env, info[0]);
+    auto logical_type = duckdb_expression_return_type(expr);
+    return CreateExternalForLogicalType(env, logical_type);
+  }
 
   // DUCKDB_C_API bool duckdb_expression_is_foldable(duckdb_expression expr);
-  // TODO expression
+  // function expression_is_foldable(expression: Expression): boolean
+  Napi::Value expression_is_foldable(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    auto expr = GetExpressionFromExternal(env, info[0]);
+    bool foldable = duckdb_expression_is_foldable(expr);
+    return Napi::Boolean::New(env, foldable);
+  }
 
   // DUCKDB_C_API duckdb_error_data duckdb_expression_fold(duckdb_client_context context, duckdb_expression expr, duckdb_value *out_value);
-  // TODO expression
+  // function expression_fold(context: ClientContext, expression: Expression): Value
+  Napi::Value expression_fold(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    auto context = GetClientContextFromExternal(env, info[0]);
+    auto expr = GetExpressionFromExternal(env, info[1]);
+    duckdb_value out_value = nullptr;
+    auto error = duckdb_expression_fold(context, expr, &out_value);
+    
+    // Check if there was an error
+    if (error.has_error) {
+      std::string error_message = error.error ? error.error : "Unknown error during expression fold";
+      if (error.error) {
+        duckdb_free(error.error);
+      }
+      throw Napi::Error::New(env, error_message);
+    }
+    
+    return CreateExternalForValue(env, out_value);
+  }
 
   // ADDED
   // function get_data_from_pointer(array_buffer: ArrayBuffer, pointer_offset: number, byte_count: number): Uint8Array

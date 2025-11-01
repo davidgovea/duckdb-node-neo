@@ -280,4 +280,29 @@ suite('scalar functions', () => {
       });
     });
   });
+
+  test('expression functions - return type', async () => {
+    await withConnection(async (connection) => {
+      const const_value = duckdb.create_int32(42);
+      const expr = duckdb.create_int_literal(const_value);
+      
+      const return_type = duckdb.expression_return_type(expr);
+      expect(return_type).toBeTruthy();
+      
+      const type_id = duckdb.get_type_id(return_type);
+      expect(type_id).toBe(duckdb.Type.INTEGER);
+      // Expression is destroyed automatically by finalizer
+    });
+  });
+
+  test('expression functions - is foldable', async () => {
+    await withConnection(async (connection) => {
+      const const_value = duckdb.create_int32(42);
+      const expr = duckdb.create_int_literal(const_value);
+      
+      const foldable = duckdb.expression_is_foldable(expr);
+      expect(typeof foldable).toBe('boolean');
+      // Expression is destroyed automatically by finalizer
+    });
+  });
 });

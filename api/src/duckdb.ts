@@ -9,6 +9,7 @@ export * from './createDuckDBValueConverter';
 export * from './DuckDBAppender';
 export * from './DuckDBConnection';
 export * from './DuckDBDataChunk';
+export * from './DuckDBExpression';
 export * from './DuckDBExtractedStatements';
 export * from './DuckDBFunctionInfo';
 export * from './DuckDBInstance';

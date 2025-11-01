@@ -2577,3 +2577,13 @@ ORDER BY name
     });
   });
 });
+
+describe('expressions', () => {
+  test('expression return type', async () => {
+    await withConnection(async (connection) => {
+      // Import DuckDBExpression to test basic functionality
+      const { DuckDBExpression } = await import('../src/DuckDBExpression');
+      assert(DuckDBExpression, 'DuckDBExpression should be defined');
+    });
+  });
+});

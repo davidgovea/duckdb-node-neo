@@ -244,6 +244,18 @@ export interface Value {
   __duckdb_type: 'duckdb_value';
 }
 
+export interface Expression {
+  __duckdb_type: 'duckdb_expression';
+}
+
+export interface BindInfo {
+  __duckdb_type: 'duckdb_bind_info';
+}
+
+export interface ClientContext {
+  __duckdb_type: 'duckdb_client_context';
+}
+
 // Types (TypeScript only)
 
 export interface ConfigFlag {
@@ -1098,7 +1110,22 @@ export function scalar_function_set_error(function_info: FunctionInfo, error: st
 // DUCKDB_C_API duckdb_state duckdb_register_scalar_function_set(duckdb_connection con, duckdb_scalar_function_set set);
 
 // DUCKDB_C_API idx_t duckdb_scalar_function_bind_get_argument_count(duckdb_bind_info info);
+export function scalar_function_bind_get_argument_count(bind_info: BindInfo): number;
+
 // DUCKDB_C_API duckdb_expression duckdb_scalar_function_bind_get_argument(duckdb_bind_info info, idx_t index);
+export function scalar_function_bind_get_argument(bind_info: BindInfo, index: number): Expression;
+
+// DUCKDB_C_API void duckdb_destroy_expression(duckdb_expression *expr);
+// not exposed: destroyed in finalizer
+
+// DUCKDB_C_API duckdb_logical_type duckdb_expression_return_type(duckdb_expression expr);
+export function expression_return_type(expression: Expression): LogicalType;
+
+// DUCKDB_C_API bool duckdb_expression_is_foldable(duckdb_expression expr);
+export function expression_is_foldable(expression: Expression): boolean;
+
+// DUCKDB_C_API duckdb_error_data duckdb_expression_fold(duckdb_client_context context, duckdb_expression expr, duckdb_value *out_value);
+export function expression_fold(context: ClientContext, expression: Expression): Value;
 
 // DUCKDB_C_API duckdb_selection_vector duckdb_create_selection_vector(idx_t size);
 // DUCKDB_C_API void duckdb_destroy_selection_vector(duckdb_selection_vector sel);
