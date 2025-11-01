@@ -5187,10 +5187,10 @@ private:
     auto error = duckdb_expression_fold(context, expr, &out_value);
     
     // Check if there was an error
-    if (error.has_error) {
-      std::string error_message = error.error ? error.error : "Unknown error during expression fold";
-      if (error.error) {
-        duckdb_free(error.error);
+    if (error->has_error) {
+      std::string error_message = error->error ? error->error : "Unknown error during expression fold";
+      if (error->error) {
+        duckdb_free(error->error);
       }
       throw Napi::Error::New(env, error_message);
     }
