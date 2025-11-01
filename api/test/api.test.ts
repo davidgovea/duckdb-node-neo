@@ -12,7 +12,6 @@ import {
   DECIMAL,
   DOUBLE,
   DateParts,
-  DuckDBArrayType,
   DuckDBArrayVector,
   DuckDBBigIntVector,
   DuckDBBigNumVector,
