@@ -12,6 +12,7 @@ import {
   DECIMAL,
   DOUBLE,
   DateParts,
+  DuckDBArrayType,
   DuckDBArrayVector,
   DuckDBBigIntVector,
   DuckDBBigNumVector,
@@ -36,11 +37,13 @@ import {
   DuckDBInstance,
   DuckDBIntegerVector,
   DuckDBIntervalVector,
+  DuckDBListType,
   DuckDBListVector,
   DuckDBMapVector,
   DuckDBPendingResultState,
   DuckDBResult,
   DuckDBSmallIntVector,
+  DuckDBStructType,
   DuckDBStructVector,
   DuckDBTimeTZValue,
   DuckDBTimeTZVector,
@@ -809,6 +812,41 @@ describe('api', () => {
         DuckDBBigIntVector,
         bigints(2048n * 4n, 9999n)
       );
+    });
+  });
+  test('should expose column count via prepared statement', async () => {
+    await withConnection(async (connection) => {
+      const prepared = await connection.prepare('SELECT 1 as a, 2 as b, 3 as c');
+      assert.strictEqual(prepared.columnCount, 3);
+    });
+  });
+  test('should expose column names from prepared statement', async () => {
+    await withConnection(async (connection) => {
+      const prepared = await connection.prepare('SELECT 42 as answer, \'hello\' as greeting');
+      assert.strictEqual(prepared.columnName(0), 'answer');
+      assert.strictEqual(prepared.columnName(1), 'greeting');
+    });
+  });
+  test('should expose column types from prepared statement', async () => {
+    await withConnection(async (connection) => {
+      const prepared = await connection.prepare('SELECT 42 as num, \'hello\' as text, true as flag');
+      assert.strictEqual(prepared.columnTypeId(0), DuckDBTypeId.INTEGER);
+      assert.strictEqual(prepared.columnTypeId(1), DuckDBTypeId.VARCHAR);
+      assert.strictEqual(prepared.columnTypeId(2), DuckDBTypeId.BOOLEAN);
+      assert.deepEqual(prepared.columnType(0), INTEGER);
+      assert.deepEqual(prepared.columnType(1), VARCHAR);
+      assert.deepEqual(prepared.columnType(2), BOOLEAN);
+    });
+  });
+  test('should expose complex column types from prepared statement', async () => {
+    await withConnection(async (connection) => {
+      const prepared = await connection.prepare('SELECT [1, 2, 3] as list_col, {\'a\': 1} as obj');
+      assert.strictEqual(prepared.columnTypeId(0), DuckDBTypeId.LIST);
+      assert.strictEqual(prepared.columnTypeId(1), DuckDBTypeId.STRUCT);
+      const listType = prepared.columnType(0);
+      assert.instanceOf(listType, DuckDBListType);
+      const structType = prepared.columnType(1);
+      assert.instanceOf(structType, DuckDBStructType);
     });
   });
   test('runAndReadAll with params', async () => {

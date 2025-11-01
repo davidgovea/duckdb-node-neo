@@ -54,6 +54,45 @@ suite('prepared statements', () => {
       });
     });
   });
+  test('column metadata from SELECT', async () => {
+    await withConnection(async (connection) => {
+      const prepared = await duckdb.prepare(
+        connection,
+        'SELECT 42 as num, \'hello\' as str, true as flag'
+      );
+      expect(duckdb.prepared_statement_column_count(prepared)).toBe(3);
+      expect(duckdb.prepared_statement_column_name(prepared, 0)).toBe('num');
+      expect(duckdb.prepared_statement_column_name(prepared, 1)).toBe('str');
+      expect(duckdb.prepared_statement_column_name(prepared, 2)).toBe('flag');
+      expect(duckdb.prepared_statement_column_type(prepared, 0)).toBe(duckdb.Type.INTEGER);
+      expect(duckdb.prepared_statement_column_type(prepared, 1)).toBe(duckdb.Type.VARCHAR);
+      expect(duckdb.prepared_statement_column_type(prepared, 2)).toBe(duckdb.Type.BOOLEAN);
+    });
+  });
+  test('column logical types from SELECT with complex types', async () => {
+    await withConnection(async (connection) => {
+      const prepared = await duckdb.prepare(
+        connection,
+        'SELECT [1, 2, 3] as list_col, {\'a\': 1} as struct_col'
+      );
+      expect(duckdb.prepared_statement_column_count(prepared)).toBe(2);
+      const listType = duckdb.prepared_statement_column_logical_type(prepared, 0);
+      expect(duckdb.get_type_id(listType)).toBe(duckdb.Type.LIST);
+      const structType = duckdb.prepared_statement_column_logical_type(prepared, 1);
+      expect(duckdb.get_type_id(structType)).toBe(duckdb.Type.STRUCT);
+    });
+  });
+  test('column metadata for empty result set', async () => {
+    await withConnection(async (connection) => {
+      const prepared = await duckdb.prepare(
+        connection,
+        'SELECT 1 as x WHERE false'
+      );
+      expect(duckdb.prepared_statement_column_count(prepared)).toBe(1);
+      expect(duckdb.prepared_statement_column_name(prepared, 0)).toBe('x');
+      expect(duckdb.prepared_statement_column_type(prepared, 0)).toBe(duckdb.Type.INTEGER);
+    });
+  });
   test('auto-increment parameters', async () => {
     await withConnection(async (connection) => {
       const prepared = await duckdb.prepare(
