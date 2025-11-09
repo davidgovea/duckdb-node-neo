@@ -1716,6 +1716,7 @@ public:
       InstanceMethod("scalar_function_set_error", &DuckDBNodeAddon::scalar_function_set_error),
       InstanceMethod("scalar_function_bind_get_argument_count", &DuckDBNodeAddon::scalar_function_bind_get_argument_count),
       InstanceMethod("scalar_function_bind_get_argument", &DuckDBNodeAddon::scalar_function_bind_get_argument),
+      InstanceMethod("scalar_function_get_client_context", &DuckDBNodeAddon::scalar_function_get_client_context),
 
       InstanceMethod("appender_create", &DuckDBNodeAddon::appender_create),
       InstanceMethod("appender_create_ext", &DuckDBNodeAddon::appender_create_ext),
@@ -4437,7 +4438,20 @@ private:
   // TODO scalar function bind
 
   // DUCKDB_C_API void duckdb_scalar_function_get_client_context(duckdb_bind_info info, duckdb_client_context *out_context);
-  // TODO scalar function bind
+  // function scalar_function_get_client_context(bind_info: BindInfo): ClientContext
+  Napi::Value scalar_function_get_client_context(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    auto bind_info = GetBindInfoFromExternal(env, info[0]);
+    duckdb_client_context client_context = nullptr;
+    duckdb_scalar_function_get_client_context(bind_info, &client_context);
+    if (!client_context) {
+      throw Napi::Error::New(
+        env,
+        "Failed to retrieve client context from bind info"
+      );
+    }
+    return CreateExternalForClientContextWithoutFinalizer(env, client_context);
+  }
 
   // DUCKDB_C_API void duckdb_scalar_function_set_error(duckdb_function_info info, const char *error);
   // function scalar_function_set_error(function_info: FunctionInfo, error: string): void

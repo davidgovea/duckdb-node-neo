@@ -379,4 +379,55 @@ suite('scalar functions', () => {
       });
     });
   });
+
+  test('expression functions - client context fold', async () => {
+    await withConnection(async (connection) => {
+      const scalar_function = duckdb.create_scalar_function();
+      duckdb.scalar_function_set_name(scalar_function, 'test_ctx_fold');
+      const int_type = duckdb.create_logical_type(duckdb.Type.INTEGER);
+      const varchar_type = duckdb.create_logical_type(duckdb.Type.VARCHAR);
+      duckdb.scalar_function_add_parameter(scalar_function, int_type);
+      duckdb.scalar_function_set_return_type(scalar_function, varchar_type);
+
+      let foldedValue: number | null = null;
+
+      duckdb.scalar_function_set_bind(scalar_function, (bind_info) => {
+        const context = duckdb.scalar_function_get_client_context(bind_info);
+        expect(context).toBeTruthy();
+        const expr = duckdb.scalar_function_bind_get_argument(bind_info, 0);
+        const folded = duckdb.expression_fold(context, expr);
+        foldedValue = duckdb.get_int32(folded);
+      });
+
+      duckdb.scalar_function_set_function(
+        scalar_function,
+        (_info, input, output) => {
+          expect(foldedValue).not.toBeNull();
+          const rowCount = duckdb.data_chunk_get_size(input);
+          for (let i = 0; i < rowCount; i++) {
+            duckdb.vector_assign_string_element(
+              output,
+              i,
+              `folded:${foldedValue}`
+            );
+          }
+        }
+      );
+
+      duckdb.register_scalar_function(connection, scalar_function);
+      duckdb.destroy_scalar_function_sync(scalar_function);
+
+      const result = await duckdb.query(connection, 'select test_ctx_fold(24) as result');
+      await expectResult(result, {
+        chunkCount: 1,
+        rowCount: 1,
+        columns: [
+          { name: 'result', logicalType: { typeId: duckdb.Type.VARCHAR } }
+        ],
+        chunks: [
+          { rowCount: 1, vectors: [data(16, [true], ['folded:24'])] }
+        ]
+      });
+    });
+  });
 });

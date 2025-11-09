@@ -16,6 +16,10 @@ export class DuckDBBindInfo {
     const expr = duckdb.scalar_function_bind_get_argument(this.bind_info, index);
     return new DuckDBExpression(expr);
   }
+
+  public get clientContext(): duckdb.ClientContext {
+    return duckdb.scalar_function_get_client_context(this.bind_info);
+  }
   
   public setError(error: string) {
     duckdb.scalar_function_bind_set_error(this.bind_info, error);

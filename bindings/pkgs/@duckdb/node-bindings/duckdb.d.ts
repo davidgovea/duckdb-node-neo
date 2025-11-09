@@ -1103,6 +1103,7 @@ export function scalar_function_get_extra_info(function_info: FunctionInfo): obj
 // DUCKDB_C_API void *duckdb_scalar_function_bind_get_extra_info(duckdb_bind_info info);
 // DUCKDB_C_API void *duckdb_scalar_function_get_bind_data(duckdb_function_info info);
 // DUCKDB_C_API void duckdb_scalar_function_get_client_context(duckdb_bind_info info, duckdb_client_context *out_context);
+export function scalar_function_get_client_context(bind_info: BindInfo): ClientContext;
 
 // DUCKDB_C_API void duckdb_scalar_function_set_error(duckdb_function_info info, const char *error);
 export function scalar_function_set_error(function_info: FunctionInfo, error: string): void;

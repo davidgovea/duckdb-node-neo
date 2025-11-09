@@ -1,4 +1,5 @@
 import fs from 'fs';
+import duckdb from '@duckdb/node-bindings';
 import { assert, beforeAll, describe, test } from 'vitest';
 import {
   ANY,
@@ -2401,6 +2402,42 @@ ORDER BY name
       const columns = reader.getColumnsObject();
       assert.deepEqual(columns, {
         'my_func(NULL)': ['output_is_not_null'],
+      });
+    });
+  });
+
+  test('scalar function bind info exposes client context', async () => {
+    await withConnection(async (connection) => {
+      let foldedValue: number | null = null;
+      const scalarFunction = DuckDBScalarFunction.create({
+        name: 'bind_ctx',
+        mainFunction: (_info, input, output) => {
+          assert.isNotNull(foldedValue);
+          for (let rowIndex = 0; rowIndex < input.rowCount; rowIndex++) {
+            output.setItem(rowIndex, `folded:${foldedValue}`);
+          }
+          output.flush();
+        },
+        returnType: VARCHAR,
+        parameterTypes: [INTEGER],
+      });
+
+      scalarFunction.setBindFunction((bindInfo) => {
+        const expression = bindInfo.getArgument(0);
+        const context = bindInfo.clientContext;
+        const folded = expression.fold(context);
+        foldedValue = duckdb.get_int32(folded);
+      });
+
+      connection.registerScalarFunction(scalarFunction);
+      scalarFunction.destroySync();
+
+      const reader = await connection.runAndReadAll(
+        'select bind_ctx(12) as folded_value'
+      );
+      const columns = reader.getColumnsObject();
+      assert.deepEqual(columns, {
+        'folded_value': ['folded:12'],
       });
     });
   });
