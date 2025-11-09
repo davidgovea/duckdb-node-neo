@@ -23,6 +23,7 @@ export class DuckDBScalarFunction {
   public static create({
     name,
     mainFunction,
+    bindFunction,
     returnType,
     parameterTypes,
     varArgsType,
@@ -32,6 +33,7 @@ export class DuckDBScalarFunction {
   }: {
     name: string;
     mainFunction: DuckDBScalarMainFunction;
+    bindFunction?: DuckDBScalarBindFunction;
     returnType: DuckDBType;
     parameterTypes?: readonly DuckDBType[];
     varArgsType?: DuckDBType;
@@ -59,6 +61,9 @@ export class DuckDBScalarFunction {
     }
     if (extraInfo) {
       scalarFunction.setExtraInfo(extraInfo);
+    }
+    if (bindFunction) {
+      scalarFunction.setBindFunction(bindFunction);
     }
     return scalarFunction;
   }

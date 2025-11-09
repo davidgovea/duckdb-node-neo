@@ -2442,6 +2442,32 @@ ORDER BY name
     });
   });
 
+  test('scalar function bind expression return type', async () => {
+    await withConnection(async (connection) => {
+      let returnTypeId: number | null = null;
+      const scalarFunction = DuckDBScalarFunction.create({
+        name: 'test_func',
+        parameterTypes: [INTEGER],
+        returnType: VARCHAR,
+        bindFunction: (bindInfo) => {
+          const expr = bindInfo.getArgument(0);
+          returnTypeId = expr.returnType.typeId;
+        },
+        mainFunction: (_info, _input, output) => {
+          for (let rowIndex = 0; rowIndex < _input.rowCount; rowIndex++) {
+            output.setItem(rowIndex, 'confirmed');
+          }
+          output.flush();
+        }
+      });
+      connection.registerScalarFunction(scalarFunction);
+      const reader = await connection.runAndReadAll('select test_func(42)');
+      assert.equal(returnTypeId, DuckDBTypeId.INTEGER);
+      const columns = reader.getColumnsObject();
+      assert.deepEqual(columns, { 'test_func(42)': ['confirmed'] });
+    });
+  });
+
   describe('SQL utility functions', () => {
     test('quotedString', () => {
       // Basic string
@@ -2611,16 +2637,6 @@ ORDER BY name
       for await (const row of result.yieldRowObjectJson()) {
         assert.deepEqual(row, createTestAllTypesRowObjectsJson());
       }
-    });
-  });
-});
-
-describe('expressions', () => {
-  test('expression return type', async () => {
-    await withConnection(async (connection) => {
-      // Import DuckDBExpression to test basic functionality
-      const { DuckDBExpression } = await import('../src/DuckDBExpression');
-      assert(DuckDBExpression, 'DuckDBExpression should be defined');
     });
   });
 });
