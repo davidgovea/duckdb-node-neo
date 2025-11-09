@@ -5283,6 +5283,12 @@ private:
     auto env = info.Env();
     auto context = GetClientContextFromExternal(env, info[0]);
     auto expr = GetExpressionFromExternal(env, info[1]);
+    if (!duckdb_expression_is_foldable(expr)) {
+      throw Napi::Error::New(
+        env,
+        "Expression is not foldable"
+      );
+    }
     duckdb_value out_value = nullptr;
     auto error = duckdb_expression_fold(context, expr, &out_value);
     bool has_error = error && duckdb_error_data_has_error(error);
