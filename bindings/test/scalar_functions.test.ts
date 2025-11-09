@@ -281,28 +281,102 @@ suite('scalar functions', () => {
     });
   });
 
-  test('expression functions - return type', async () => {
+  test('expression functions - bind callback with argument access', async () => {
     await withConnection(async (connection) => {
-      const const_value = duckdb.create_int32(42);
-      const expr = duckdb.create_int_literal(const_value);
+      const scalar_function = duckdb.create_scalar_function();
+      duckdb.scalar_function_set_name(scalar_function, 'test_expr_func');
+      const int_type = duckdb.create_logical_type(duckdb.Type.INTEGER);
+      const varchar_type = duckdb.create_logical_type(duckdb.Type.VARCHAR);
       
-      const return_type = duckdb.expression_return_type(expr);
-      expect(return_type).toBeTruthy();
-      
-      const type_id = duckdb.get_type_id(return_type);
-      expect(type_id).toBe(duckdb.Type.INTEGER);
-      // Expression is destroyed automatically by finalizer
+      // Add parameter BEFORE bind callback
+      duckdb.scalar_function_add_parameter(scalar_function, int_type);
+      duckdb.scalar_function_set_return_type(scalar_function, varchar_type);
+
+      let arg_type_verified = false;
+      let is_foldable_checked = false;
+
+      duckdb.scalar_function_set_bind(scalar_function, (bind_info) => {
+        const arg_count = duckdb.scalar_function_bind_get_argument_count(bind_info);
+
+        if (arg_count > 0) {
+          const expr = duckdb.scalar_function_bind_get_argument(bind_info, 0);
+          const return_type = duckdb.expression_return_type(expr);
+          const type_id = duckdb.get_type_id(return_type);
+          arg_type_verified = (type_id === duckdb.Type.INTEGER);
+
+          is_foldable_checked = typeof duckdb.expression_is_foldable(expr) === 'boolean';
+        }
+      });
+
+      duckdb.scalar_function_set_function(scalar_function, (_info, _input, output) => {
+        const rowCount = duckdb.data_chunk_get_size(_input);
+        for (let i = 0; i < rowCount; i++) {
+          duckdb.vector_assign_string_element(output, i, `type_ok:${arg_type_verified},foldable:${is_foldable_checked}`);
+        }
+      });
+
+      duckdb.register_scalar_function(connection, scalar_function);
+      duckdb.destroy_scalar_function_sync(scalar_function);
+
+      const result = await duckdb.query(connection, 'select test_expr_func(42) as result');
+      await expectResult(result, {
+        chunkCount: 1,
+        rowCount: 1,
+        columns: [
+          { name: 'result', logicalType: { typeId: duckdb.Type.VARCHAR } }
+        ],
+        chunks: [
+          { rowCount: 1, vectors: [data(16, [true], ['type_ok:true,foldable:true'])] }
+        ]
+      });
     });
   });
 
-  test('expression functions - is foldable', async () => {
+  test('expression functions - check multiple arguments', async () => {
     await withConnection(async (connection) => {
-      const const_value = duckdb.create_int32(42);
-      const expr = duckdb.create_int_literal(const_value);
-      
-      const foldable = duckdb.expression_is_foldable(expr);
-      expect(typeof foldable).toBe('boolean');
-      // Expression is destroyed automatically by finalizer
+      const scalar_function = duckdb.create_scalar_function();
+      duckdb.scalar_function_set_name(scalar_function, 'test_multi_arg');
+      const int_type = duckdb.create_logical_type(duckdb.Type.INTEGER);
+      const varchar_type = duckdb.create_logical_type(duckdb.Type.VARCHAR);
+      duckdb.scalar_function_add_parameter(scalar_function, int_type);
+      duckdb.scalar_function_add_parameter(scalar_function, int_type);
+      duckdb.scalar_function_set_return_type(scalar_function, varchar_type);
+
+      let arg_count = 0;
+
+      duckdb.scalar_function_set_bind(scalar_function, (bind_info) => {
+        arg_count = duckdb.scalar_function_bind_get_argument_count(bind_info);
+        expect(arg_count).toBe(2);
+
+        for (let i = 0; i < arg_count; i++) {
+          const expr = duckdb.scalar_function_bind_get_argument(bind_info, i);
+          const return_type = duckdb.expression_return_type(expr);
+          const type_id = duckdb.get_type_id(return_type);
+          expect(type_id).toBe(duckdb.Type.INTEGER);
+        }
+      });
+
+      duckdb.scalar_function_set_function(scalar_function, (_info, _input, output) => {
+        const rowCount = duckdb.data_chunk_get_size(_input);
+        for (let i = 0; i < rowCount; i++) {
+          duckdb.vector_assign_string_element(output, i, `args:${arg_count}`);
+        }
+      });
+
+      duckdb.register_scalar_function(connection, scalar_function);
+      duckdb.destroy_scalar_function_sync(scalar_function);
+
+      const result = await duckdb.query(connection, 'select test_multi_arg(10, 20) as result');
+      await expectResult(result, {
+        chunkCount: 1,
+        rowCount: 1,
+        columns: [
+          { name: 'result', logicalType: { typeId: duckdb.Type.VARCHAR } }
+        ],
+        chunks: [
+          { rowCount: 1, vectors: [data(16, [true], ['args:2'])] }
+        ]
+      });
     });
   });
 });

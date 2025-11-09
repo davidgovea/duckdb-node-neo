@@ -36,10 +36,9 @@ export class DuckDBExpression {
    * Only works if isFoldable is true.
    *
    * @param context The client context to use for folding
-   * @returns The folded value
+   * @returns The folded value as a native DuckDB value handle
    */
-  public fold(context: duckdb.ClientContext): DuckDBValue {
-    const value = duckdb.expression_fold(context, this.expression);
-    return value;
+  public fold(context: duckdb.ClientContext): duckdb.Value {
+    return duckdb.expression_fold(context, this.expression);
   }
 }

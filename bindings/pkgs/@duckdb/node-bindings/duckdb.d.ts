@@ -268,9 +268,10 @@ export interface ExtractedStatementsAndCount {
   statement_count: number;
 }
 
-export type ScalarFunctionMainFunction = (info: FunctionInfo, input: DataChunk, output: Vector) => void;
-
-// Functions
+  export type ScalarFunctionMainFunction = (info: FunctionInfo, input: DataChunk, output: Vector) => void;
+  export type ScalarFunctionBindFunction = (info: BindInfo) => void;
+  
+  // Functions
 
 // DUCKDB_C_API duckdb_instance_cache duckdb_create_instance_cache();
 export function create_instance_cache(): InstanceCache;
@@ -1080,15 +1081,17 @@ export function scalar_function_add_parameter(scalar_function: ScalarFunction, l
 // DUCKDB_C_API void duckdb_scalar_function_set_return_type(duckdb_scalar_function scalar_function, duckdb_logical_type type);
 export function scalar_function_set_return_type(scalar_function: ScalarFunction, logical_type: LogicalType): void;
 
-// DUCKDB_C_API void duckdb_scalar_function_set_extra_info(duckdb_scalar_function scalar_function, void *extra_info, duckdb_delete_callback_t destroy);
-export function scalar_function_set_extra_info(scalar_function: ScalarFunction, extra_info: object): void;
-
-// DUCKDB_C_API void duckdb_scalar_function_set_bind(duckdb_scalar_function scalar_function, duckdb_scalar_function_bind_t bind);
-// DUCKDB_C_API void duckdb_scalar_function_set_bind_data(duckdb_bind_info info, void *bind_data, duckdb_delete_callback_t destroy);
-// DUCKDB_C_API void duckdb_scalar_function_set_bind_data_copy(duckdb_bind_info info, duckdb_copy_callback_t copy);
-// DUCKDB_C_API void duckdb_scalar_function_bind_set_error(duckdb_bind_info info, const char *error);
-
-// DUCKDB_C_API void duckdb_scalar_function_set_function(duckdb_scalar_function scalar_function, duckdb_scalar_function_t function);
+  // DUCKDB_C_API void duckdb_scalar_function_set_extra_info(duckdb_scalar_function scalar_function, void *extra_info, duckdb_delete_callback_t destroy);
+  export function scalar_function_set_extra_info(scalar_function: ScalarFunction, extra_info: object): void;
+  
+  // DUCKDB_C_API void duckdb_scalar_function_set_bind(duckdb_scalar_function scalar_function, duckdb_scalar_function_bind_t bind);
+  export function scalar_function_set_bind(scalar_function: ScalarFunction, func: ScalarFunctionBindFunction): void;
+  
+  // DUCKDB_C_API void duckdb_scalar_function_set_bind_data(duckdb_bind_info info, void *bind_data, duckdb_delete_callback_t destroy);
+  // DUCKDB_C_API void duckdb_scalar_function_set_bind_data_copy(duckdb_bind_info info, duckdb_copy_callback_t copy);
+  // DUCKDB_C_API void duckdb_scalar_function_bind_set_error(duckdb_bind_info info, const char *error);
+  
+  // DUCKDB_C_API void duckdb_scalar_function_set_function(duckdb_scalar_function scalar_function, duckdb_scalar_function_t function);
 export function scalar_function_set_function(scalar_function: ScalarFunction, func: ScalarFunctionMainFunction): void;
 
 // DUCKDB_C_API duckdb_state duckdb_register_scalar_function(duckdb_connection con, duckdb_scalar_function scalar_function);
@@ -1114,18 +1117,6 @@ export function scalar_function_bind_get_argument_count(bind_info: BindInfo): nu
 
 // DUCKDB_C_API duckdb_expression duckdb_scalar_function_bind_get_argument(duckdb_bind_info info, idx_t index);
 export function scalar_function_bind_get_argument(bind_info: BindInfo, index: number): Expression;
-
-// DUCKDB_C_API void duckdb_destroy_expression(duckdb_expression *expr);
-// not exposed: destroyed in finalizer
-
-// DUCKDB_C_API duckdb_logical_type duckdb_expression_return_type(duckdb_expression expr);
-export function expression_return_type(expression: Expression): LogicalType;
-
-// DUCKDB_C_API bool duckdb_expression_is_foldable(duckdb_expression expr);
-export function expression_is_foldable(expression: Expression): boolean;
-
-// DUCKDB_C_API duckdb_error_data duckdb_expression_fold(duckdb_client_context context, duckdb_expression expr, duckdb_value *out_value);
-export function expression_fold(context: ClientContext, expression: Expression): Value;
 
 // DUCKDB_C_API duckdb_selection_vector duckdb_create_selection_vector(idx_t size);
 // DUCKDB_C_API void duckdb_destroy_selection_vector(duckdb_selection_vector sel);
@@ -1370,9 +1361,13 @@ export function fetch_chunk(result: Result): Promise<DataChunk | null>;
 // DUCKDB_C_API void duckdb_destroy_cast_function(duckdb_cast_function *cast_function);
 
 // DUCKDB_C_API void duckdb_destroy_expression(duckdb_expression *expr);
+// not exposed: destroyed in finalizer
 // DUCKDB_C_API duckdb_logical_type duckdb_expression_return_type(duckdb_expression expr);
+export function expression_return_type(expression: Expression): LogicalType;
 // DUCKDB_C_API bool duckdb_expression_is_foldable(duckdb_expression expr);
+export function expression_is_foldable(expression: Expression): boolean;
 // DUCKDB_C_API duckdb_error_data duckdb_expression_fold(duckdb_client_context context, duckdb_expression expr, duckdb_value *out_value);
+export function expression_fold(context: ClientContext, expression: Expression): Value;
 
 
 // ADDED
