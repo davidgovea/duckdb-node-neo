@@ -630,9 +630,9 @@ void ScalarFunctionBindTSFNCallback(Napi::Env env, Napi::Function callback, Scal
 using ScalarFunctionBindTSFN = Napi::TypedThreadSafeFunction<ScalarFunctionBindTSFNContext, ScalarFunctionBindTSFNData, ScalarFunctionBindTSFNCallback>;
 
 struct ScalarFunctionInternalExtraInfo {
-std::unique_ptr<ScalarFunctionMainTSFN> main_tsfn;
-std::unique_ptr<ScalarFunctionBindTSFN> bind_tsfn;
-std::unique_ptr<Napi::ObjectReference> user_extra_info_ref;
+  std::unique_ptr<ScalarFunctionMainTSFN> main_tsfn;
+  std::unique_ptr<ScalarFunctionBindTSFN> bind_tsfn;
+  std::unique_ptr<Napi::ObjectReference> user_extra_info_ref;
 
   ScalarFunctionInternalExtraInfo() {}
 
@@ -1709,7 +1709,7 @@ public:
       InstanceMethod("scalar_function_add_parameter", &DuckDBNodeAddon::scalar_function_add_parameter),
       InstanceMethod("scalar_function_set_return_type", &DuckDBNodeAddon::scalar_function_set_return_type),
       InstanceMethod("scalar_function_set_extra_info", &DuckDBNodeAddon::scalar_function_set_extra_info),
-		InstanceMethod("scalar_function_set_bind", &DuckDBNodeAddon::scalar_function_set_bind),
+      InstanceMethod("scalar_function_set_bind", &DuckDBNodeAddon::scalar_function_set_bind),
       InstanceMethod("scalar_function_set_function", &DuckDBNodeAddon::scalar_function_set_function),
       InstanceMethod("register_scalar_function", &DuckDBNodeAddon::register_scalar_function),
       InstanceMethod("scalar_function_get_extra_info", &DuckDBNodeAddon::scalar_function_get_extra_info),
@@ -4374,16 +4374,16 @@ private:
   }
 
   // DUCKDB_C_API void duckdb_scalar_function_set_bind(duckdb_scalar_function scalar_function, duckdb_scalar_function_bind_t bind);
-	// function scalar_function_set_bind(scalar_function: ScalarFunction, func: ScalarFunctionBindFunction): void
-	Napi::Value scalar_function_set_bind(const Napi::CallbackInfo& info) {
-		auto env = info.Env();
-		auto holder = GetScalarFunctionHolderFromExternal(env, info[0]);
-		auto func = info[1].As<Napi::Function>();
-		holder->EnsureInternalExtraInfo();
-		holder->internal_extra_info->SetBindFunction(env, func);
-		duckdb_scalar_function_set_bind(holder->scalar_function, &ScalarFunctionBindFunction);
-		return env.Undefined();
-	}
+  // function scalar_function_set_bind(scalar_function: ScalarFunction, func: ScalarFunctionBindFunction): void
+  Napi::Value scalar_function_set_bind(const Napi::CallbackInfo& info) {
+    auto env = info.Env();
+    auto holder = GetScalarFunctionHolderFromExternal(env, info[0]);
+    auto func = info[1].As<Napi::Function>();
+    holder->EnsureInternalExtraInfo();
+    holder->internal_extra_info->SetBindFunction(env, func);
+    duckdb_scalar_function_set_bind(holder->scalar_function, &ScalarFunctionBindFunction);
+    return env.Undefined();
+  }
 
   // DUCKDB_C_API void duckdb_scalar_function_set_bind_data(duckdb_bind_info info, void *bind_data, duckdb_delete_callback_t destroy);
   // TODO scalar function bind
